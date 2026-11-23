@@ -1,0 +1,6 @@
+{
+  "listen_addr": ":8443",
+  "tun_name": "vpn0",
+  "tun_cidr": "10.8.0.1/24",
+  "token": "REPLACE_WITH_RANDOM_HEX"
+}

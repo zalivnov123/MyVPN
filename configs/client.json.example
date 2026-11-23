@@ -1,0 +1,8 @@
+{
+  "server_addr": "YOUR_SERVER_IP:8443",
+  "tun_name": "MyVPN",
+  "tun_ip": "10.8.0.2/24",
+  "tun_gateway": "10.8.0.1",
+  "dns": "1.1.1.1",
+  "token": "REPLACE_WITH_RANDOM_HEX"
+}
