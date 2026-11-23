@@ -1,9 +1,12 @@
-// Command client connects a Windows machine to the VPN server:
+// Command client connects a Windows machine to the VPN server over TLS:
 // creates a wintun adapter, routes traffic through the tunnel.
 // Requires administrator privileges.
 package main
 
 import (
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"log"
@@ -11,8 +14,12 @@ import (
 	"net/netip"
 	"os"
 	"os/signal"
+	"strings"
+	"sync/atomic"
 	"syscall"
+	"time"
 
+	utls "github.com/refraction-networking/utls"
 	"golang.org/x/sys/windows"
 	"golang.zx2c4.com/wireguard/windows/tunnel/winipcfg"
 
@@ -51,8 +58,76 @@ func defaultGateway() (winipcfg.LUID, netip.Addr, error) {
 	return luid, gw, nil
 }
 
+// dialTLS connects to the server with a Chrome-like TLS fingerprint
+// and verifies the pinned certificate fingerprint.
+func dialTLS(cfg config.ClientConfig) (net.Conn, error) {
+	wantFP := strings.ToLower(strings.ReplaceAll(cfg.CertFingerprint, ":", ""))
+	tlsCfg := &utls.Config{
+		InsecureSkipVerify: true, // we verify the fingerprint manually below
+		ServerName:         cfg.SNI,
+		MinVersion:         utls.VersionTLS13,
+		VerifyPeerCertificate: func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
+			if len(rawCerts) == 0 {
+				return fmt.Errorf("no server certificate")
+			}
+			sum := sha256.Sum256(rawCerts[0])
+			if hex.EncodeToString(sum[:]) != wantFP {
+				return fmt.Errorf("server certificate fingerprint mismatch")
+			}
+			return nil
+		},
+	}
+	rawConn, err := net.DialTimeout("tcp", cfg.ServerAddr, 10*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	conn := utls.UClient(rawConn, tlsCfg, utls.HelloChrome_Auto)
+	if err := conn.Handshake(); err != nil {
+		rawConn.Close()
+		return nil, err
+	}
+	// Auth frame right after the handshake.
+	if err := protocol.WritePacket(conn, []byte(cfg.Token)); err != nil {
+		conn.Close()
+		return nil, err
+	}
+	return conn, nil
+}
+
+// runEcho is a diagnostic: send a frame every 2s and wait for the echo.
+// No TUN, no admin rights needed. Usage: client -echo -config client.json
+func runEcho(cfg config.ClientConfig) {
+	cfg.Token = "echo:" + cfg.Token
+	conn, err := dialTLS(cfg)
+	if err != nil {
+		log.Fatalf("connect: %v", err)
+	}
+	defer conn.Close()
+	log.Printf("echo: connected, testing 60s")
+	payload := make([]byte, 512)
+	for i := range payload {
+		payload[i] = byte(i)
+	}
+	for i := 0; i < 30; i++ {
+		start := time.Now()
+		if err := protocol.WritePacket(conn, payload); err != nil {
+			log.Fatalf("echo: write failed at %ds: %v", i*2, err)
+		}
+		conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		buf := make([]byte, protocol.MaxPacketSize)
+		n, err := protocol.ReadPacket(conn, buf)
+		if err != nil {
+			log.Fatalf("echo: read failed at %ds: %v", i*2, err)
+		}
+		log.Printf("echo: %ds OK (%d bytes, rtt %v)", i*2, n, time.Since(start).Round(time.Millisecond))
+		time.Sleep(2 * time.Second)
+	}
+	log.Printf("echo: PASSED, connection stable for 60s")
+}
+
 func main() {
 	configPath := flag.String("config", "client.json", "path to config file")
+	echo := flag.Bool("echo", false, "diagnostic echo mode (no tunnel)")
 	flag.Parse()
 
 	var cfg config.ClientConfig
@@ -60,16 +135,21 @@ func main() {
 		log.Fatal(err)
 	}
 
+	if *echo {
+		runEcho(cfg)
+		return
+	}
+
 	serverIP, _, err := net.SplitHostPort(cfg.ServerAddr)
 	if err != nil {
 		log.Fatalf("bad server_addr: %v", err)
 	}
 
-	conn, err := net.Dial("tcp", cfg.ServerAddr)
+	conn, err := dialTLS(cfg)
 	if err != nil {
 		log.Fatalf("connect to %s: %v", cfg.ServerAddr, err)
 	}
-	log.Printf("connected to %s", cfg.ServerAddr)
+	log.Printf("connected to %s (TLS 1.3, cert pinned)", cfg.ServerAddr)
 
 	dev, err := tun.Create(cfg.TunName)
 	if err != nil {
@@ -97,7 +177,8 @@ func main() {
 		log.Fatalf("find gateway: %v", err)
 	}
 	log.Printf("physical gateway: %s", gw)
-	if err := physLUID.AddRoute(netip.PrefixFrom(netip.MustParseAddr(serverIP), 32), gw, 1); err != nil {
+	serverRoute := netip.PrefixFrom(netip.MustParseAddr(serverIP), 32)
+	if err := physLUID.AddRoute(serverRoute, gw, 1); err != nil {
 		log.Printf("add server route: %v", err)
 	}
 
@@ -114,7 +195,7 @@ func main() {
 	log.Printf("tunnel is up: %s via %s", cfg.TunIP, cfg.TunGateway)
 
 	cleanup := func() {
-		_ = physLUID.DeleteRoute(netip.PrefixFrom(netip.MustParseAddr(serverIP), 32), gw)
+		_ = physLUID.DeleteRoute(serverRoute, gw)
 		dev.Close() // closing the adapter removes its routes
 		log.Printf("tunnel is down")
 	}
@@ -127,6 +208,17 @@ func main() {
 	}()
 
 	errc := make(chan error, 2)
+	var tunRx, tunTx, connRx, connTx atomic.Uint64
+
+	// Periodic stats for debugging.
+	go func() {
+		t := time.NewTicker(15 * time.Second)
+		defer t.Stop()
+		for range t.C {
+			log.Printf("stats: tun_rx=%d conn_tx=%d conn_rx=%d tun_tx=%d",
+				tunRx.Load(), connTx.Load(), connRx.Load(), tunTx.Load())
+		}
+	}()
 
 	// TUN -> server
 	go func() {
@@ -134,13 +226,15 @@ func main() {
 		for {
 			n, err := dev.ReadPacket(buf)
 			if err != nil {
-				errc <- err
+				errc <- fmt.Errorf("read tun: %w", err)
 				return
 			}
+			tunRx.Add(1)
 			if err := protocol.WritePacket(conn, buf[:n]); err != nil {
-				errc <- err
+				errc <- fmt.Errorf("write conn: %w", err)
 				return
 			}
+			connTx.Add(1)
 		}
 	}()
 
@@ -150,13 +244,15 @@ func main() {
 		for {
 			n, err := protocol.ReadPacket(conn, buf)
 			if err != nil {
-				errc <- err
+				errc <- fmt.Errorf("read conn: %w", err)
 				return
 			}
+			connRx.Add(1)
 			if err := dev.WritePacket(buf[:n]); err != nil {
-				errc <- err
+				errc <- fmt.Errorf("write tun: %w", err)
 				return
 			}
+			tunTx.Add(1)
 		}
 	}()
 
