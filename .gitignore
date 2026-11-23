@@ -5,3 +5,4 @@
 # Real configs contain server IP and tokens — commit templates only
 configs/server.json
 configs/client.json
+*.log
