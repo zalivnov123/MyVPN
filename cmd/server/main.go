@@ -4,9 +4,9 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"log"
 	"net"
-	"os"
 	"os/exec"
 	"strings"
 
@@ -68,11 +68,11 @@ func handle(conn net.Conn, dev *tun.Device) {
 		for {
 			n, err := protocol.ReadPacket(conn, buf)
 			if err != nil {
-				errc <- err
+				errc <- fmt.Errorf("read conn: %w", err)
 				return
 			}
 			if err := dev.WritePacket(buf[:n]); err != nil {
-				errc <- err
+				errc <- fmt.Errorf("write tun: %w", err)
 				return
 			}
 		}
@@ -84,17 +84,17 @@ func handle(conn net.Conn, dev *tun.Device) {
 		for {
 			n, err := dev.ReadPacket(buf)
 			if err != nil {
-				errc <- err
+				errc <- fmt.Errorf("read tun: %w", err)
 				return
 			}
 			if err := protocol.WritePacket(conn, buf[:n]); err != nil {
-				errc <- err
+				errc <- fmt.Errorf("write conn: %w", err)
 				return
 			}
 		}
 	}()
 
-	<-errc
+	log.Printf("session error: %v", <-errc)
 }
 
 func main() {
@@ -130,6 +130,5 @@ func main() {
 		}
 		// Personal VPN: serve one client at a time.
 		handle(conn, dev)
-		os.Exit(0) // exit after first client disconnects in MVP; systemd restarts us
 	}
 }

@@ -4,7 +4,9 @@ package tun
 
 import (
 	"fmt"
+	"time"
 
+	"golang.org/x/sys/windows"
 	"golang.zx2c4.com/wintun"
 )
 
@@ -30,15 +32,22 @@ func Create(name string) (*Device, error) {
 	return &Device{Adapter: adapter, session: &session}, nil
 }
 
-// ReadPacket returns a copy of the next packet from the ring buffer.
+// ReadPacket blocks until a packet arrives and copies it into buf.
 func (d *Device) ReadPacket(buf []byte) (int, error) {
-	pkt, err := d.session.ReceivePacket()
-	if err != nil {
-		return 0, err
+	for {
+		pkt, err := d.session.ReceivePacket()
+		if err == windows.ERROR_NO_MORE_ITEMS {
+			// Ring is empty: sleep on the session event.
+			windows.WaitForSingleObject(d.session.ReadWaitEvent(), windows.INFINITE)
+			continue
+		}
+		if err != nil {
+			return 0, err
+		}
+		n := copy(buf, pkt)
+		d.session.ReleaseReceivePacket(pkt)
+		return n, nil
 	}
-	n := copy(buf, pkt)
-	d.session.ReleaseReceivePacket(pkt)
-	return n, nil
 }
 
 func (d *Device) WritePacket(pkt []byte) error {
@@ -52,7 +61,10 @@ func (d *Device) WritePacket(pkt []byte) error {
 }
 
 func (d *Device) Close() error {
+	// End the session first and give a blocked reader time to wake up
+	// and exit ReceivePacket before the adapter handle is closed.
 	d.session.End()
+	time.Sleep(200 * time.Millisecond)
 	d.Adapter.Close()
 	return nil
 }
