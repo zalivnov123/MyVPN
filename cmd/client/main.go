@@ -4,9 +4,8 @@
 package main
 
 import (
-	"crypto/sha256"
-	"crypto/x509"
-	"encoding/hex"
+	"context"
+	"encoding/base64"
 	"flag"
 	"fmt"
 	"log"
@@ -14,12 +13,11 @@ import (
 	"net/netip"
 	"os"
 	"os/signal"
-	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
 
-	utls "github.com/refraction-networking/utls"
+	"golang.org/x/crypto/ssh"
 	"golang.org/x/sys/windows"
 	"golang.zx2c4.com/wireguard/windows/tunnel/winipcfg"
 
@@ -58,35 +56,42 @@ func defaultGateway() (winipcfg.LUID, netip.Addr, error) {
 	return luid, gw, nil
 }
 
-// dialTLS connects to the server with a Chrome-like TLS fingerprint
-// and verifies the pinned certificate fingerprint.
-func dialTLS(cfg config.ClientConfig) (net.Conn, error) {
-	wantFP := strings.ToLower(strings.ReplaceAll(cfg.CertFingerprint, ":", ""))
-	tlsCfg := &utls.Config{
-		InsecureSkipVerify: true, // we verify the fingerprint manually below
-		ServerName:         cfg.SNI,
-		MinVersion:         utls.VersionTLS13,
-		VerifyPeerCertificate: func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
-			if len(rawCerts) == 0 {
-				return fmt.Errorf("no server certificate")
-			}
-			sum := sha256.Sum256(rawCerts[0])
-			if hex.EncodeToString(sum[:]) != wantFP {
-				return fmt.Errorf("server certificate fingerprint mismatch")
-			}
-			return nil
-		},
-	}
-	rawConn, err := net.DialTimeout("tcp", cfg.ServerAddr, 10*time.Second)
+// dialVPN connects to the server over SSH (camouflage: DPI lets SSH through)
+// and opens a forwarded channel to the VPN listener on the server's localhost.
+func dialVPN(cfg config.ClientConfig) (net.Conn, error) {
+	key, err := os.ReadFile(cfg.SSHKeyFile)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read ssh key: %w", err)
 	}
-	conn := utls.UClient(rawConn, tlsCfg, utls.HelloChrome_Auto)
-	if err := conn.Handshake(); err != nil {
-		rawConn.Close()
-		return nil, err
+	signer, err := ssh.ParsePrivateKey(key)
+	if err != nil {
+		return nil, fmt.Errorf("parse ssh key: %w", err)
 	}
-	// Auth frame right after the handshake.
+	hostKey, err := base64.StdEncoding.DecodeString(cfg.SSHHostKeyB64)
+	if err != nil {
+		return nil, fmt.Errorf("decode ssh_host_key: %w", err)
+	}
+	pubKey, err := ssh.ParsePublicKey(hostKey)
+	if err != nil {
+		return nil, fmt.Errorf("parse ssh_host_key: %w", err)
+	}
+	sshCfg := &ssh.ClientConfig{
+		User:              cfg.SSHUser,
+		Auth:              []ssh.AuthMethod{ssh.PublicKeys(signer)},
+		HostKeyCallback:   ssh.FixedHostKey(pubKey),
+		HostKeyAlgorithms: []string{ssh.KeyAlgoED25519},
+		Timeout:           10 * time.Second,
+	}
+	sshConn, err := ssh.Dial("tcp", cfg.SSHAddr, sshCfg)
+	if err != nil {
+		return nil, fmt.Errorf("ssh dial %s: %w", cfg.SSHAddr, err)
+	}
+	conn, err := sshConn.Dial("tcp", cfg.VPNAddr)
+	if err != nil {
+		sshConn.Close()
+		return nil, fmt.Errorf("ssh forward to %s: %w", cfg.VPNAddr, err)
+	}
+	// Auth frame right after connecting.
 	if err := protocol.WritePacket(conn, []byte(cfg.Token)); err != nil {
 		conn.Close()
 		return nil, err
@@ -98,7 +103,7 @@ func dialTLS(cfg config.ClientConfig) (net.Conn, error) {
 // No TUN, no admin rights needed. Usage: client -echo -config client.json
 func runEcho(cfg config.ClientConfig) {
 	cfg.Token = "echo:" + cfg.Token
-	conn, err := dialTLS(cfg)
+	conn, err := dialVPN(cfg)
 	if err != nil {
 		log.Fatalf("connect: %v", err)
 	}
@@ -140,16 +145,21 @@ func main() {
 		return
 	}
 
-	serverIP, _, err := net.SplitHostPort(cfg.ServerAddr)
+	host, _, err := net.SplitHostPort(cfg.SSHAddr)
 	if err != nil {
-		log.Fatalf("bad server_addr: %v", err)
+		log.Fatalf("bad ssh_addr: %v", err)
 	}
+	addrs, err := net.DefaultResolver.LookupIPAddr(context.Background(), host)
+	if err != nil || len(addrs) == 0 {
+		log.Fatalf("resolve %s: %v", host, err)
+	}
+	serverIP := addrs[0].IP.String()
 
-	conn, err := dialTLS(cfg)
+	conn, err := dialVPN(cfg)
 	if err != nil {
-		log.Fatalf("connect to %s: %v", cfg.ServerAddr, err)
+		log.Fatalf("connect to %s: %v", cfg.SSHAddr, err)
 	}
-	log.Printf("connected to %s (TLS 1.3, cert pinned)", cfg.ServerAddr)
+	log.Printf("connected to %s (SSH transport)", cfg.SSHAddr)
 
 	dev, err := tun.Create(cfg.TunName)
 	if err != nil {

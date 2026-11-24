@@ -4,7 +4,6 @@ package main
 
 import (
 	"crypto/subtle"
-	"crypto/tls"
 	"flag"
 	"fmt"
 	"log"
@@ -55,30 +54,27 @@ func setupNetwork(cfg config.ServerConfig) error {
 	subnet := strings.Split(cfg.TunCIDR, "/")[0]
 	subnet = subnet[:strings.LastIndex(subnet, ".")] + ".0/24"
 	log.Printf("NAT: %s via %s", subnet, iface)
+	// Skip if the rule already exists (server restarts would duplicate it).
+	if err := run("iptables", "-t", "nat", "-C", "POSTROUTING", "-s", subnet, "-o", iface, "-j", "MASQUERADE"); err == nil {
+		return nil
+	}
 	return run("iptables", "-t", "nat", "-A", "POSTROUTING", "-s", subnet, "-o", iface, "-j", "MASQUERADE")
 }
 
 var tunWriteMu sync.Mutex
 
-// auth reads the token frame sent by the client right after the TLS handshake.
-// Token prefixed with "echo:" selects the diagnostic echo mode.
-func auth(conn net.Conn, token string) (echo bool, err error) {
-	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
-	defer conn.SetReadDeadline(time.Time{})
-	buf := make([]byte, 256)
-	n, err := protocol.ReadPacket(conn, buf)
-	if err != nil {
-		return false, err
-	}
-	got := buf[:n]
-	if rest, ok := strings.CutPrefix(string(got), "echo:"); ok {
-		got = []byte(rest)
-		echo = true
-	}
-	if subtle.ConstantTimeCompare(got, []byte(token)) != 1 {
-		return false, fmt.Errorf("bad token")
-	}
-	return echo, nil
+const decoyPage = `<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Dota 2 Memes - Fresh Daily</title></head>
+<body style="font-family:sans-serif;max-width:640px;margin:60px auto">
+<h1>Dota 2 Memes</h1>
+<p>Fresh memes every day. We are currently moving to a new server, come back soon!</p>
+</body>
+</html>`
+
+// serveDecoy answers an HTTP probe with a harmless web page.
+func serveDecoy(conn net.Conn, req []byte) {
+	fmt.Fprintf(conn, "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: %d\r\nServer: nginx\r\nConnection: close\r\n\r\n%s", len(decoyPage), decoyPage)
 }
 
 // echoMode is a diagnostic: bounce every received frame back to the sender.
@@ -101,9 +97,37 @@ func echoMode(conn net.Conn) {
 func handle(conn net.Conn, dev *tun.Device, token string) {
 	defer conn.Close()
 	remote := conn.RemoteAddr()
-	echo, err := auth(conn, token)
+
+	// Read the first bytes: our client sends a framed token (starts with a
+	// zero length byte), HTTP probes send a verb like "GET".
+	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	first := make([]byte, 2048)
+	n, err := conn.Read(first)
 	if err != nil {
-		log.Printf("auth failed from %s: %v", remote, err)
+		return
+	}
+	if n == 0 || first[0] != 0x00 {
+		serveDecoy(conn, first[:n])
+		return
+	}
+	conn.SetReadDeadline(time.Time{})
+
+	if n < 2 {
+		return
+	}
+	frameLen := int(first[0])<<8 | int(first[1])
+	if frameLen != n-2 {
+		log.Printf("bad first frame from %s", remote)
+		return
+	}
+	got := first[2:n]
+	echo := false
+	if rest, ok := strings.CutPrefix(string(got), "echo:"); ok {
+		got = []byte(rest)
+		echo = true
+	}
+	if subtle.ConstantTimeCompare(got, []byte(token)) != 1 {
+		log.Printf("auth failed from %s", remote)
 		return
 	}
 	if echo {
@@ -113,13 +137,9 @@ func handle(conn net.Conn, dev *tun.Device, token string) {
 	log.Printf("client connected: %s", remote)
 	defer log.Printf("client disconnected: %s", remote)
 
-	if tc, ok := conn.(*tls.Conn); ok {
-		if uc := tc.NetConn(); uc != nil {
-			if tcp, ok := uc.(*net.TCPConn); ok {
-				tcp.SetKeepAlive(true)
-				tcp.SetKeepAlivePeriod(30 * time.Second)
-			}
-		}
+	if tcp, ok := conn.(*net.TCPConn); ok {
+		tcp.SetKeepAlive(true)
+		tcp.SetKeepAlivePeriod(30 * time.Second)
 	}
 
 	errc := make(chan error, 2)
@@ -181,20 +201,11 @@ func main() {
 		log.Printf("network setup warning: %v", err)
 	}
 
-	cert, err := tls.LoadX509KeyPair(cfg.CertFile, cfg.KeyFile)
-	if err != nil {
-		log.Fatalf("load TLS cert: %v", err)
-	}
-	tlsCfg := &tls.Config{
-		Certificates: []tls.Certificate{cert},
-		MinVersion:   tls.VersionTLS13,
-	}
-
-	ln, err := tls.Listen("tcp", cfg.ListenAddr, tlsCfg)
+	ln, err := net.Listen("tcp", cfg.ListenAddr)
 	if err != nil {
 		log.Fatal(err)
 	}
-	log.Printf("listening on %s (TLS 1.3)", cfg.ListenAddr)
+	log.Printf("listening on %s (plain, reached via SSH forward)", cfg.ListenAddr)
 
 	for {
 		conn, err := ln.Accept()
