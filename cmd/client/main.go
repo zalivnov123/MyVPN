@@ -212,6 +212,42 @@ func main() {
 	}
 	serverIP := addrs[0].IP.String()
 
+	// connectOnce dials and reads the assigned tunnel IP. No system state
+	// (routes, adapters) is touched here.
+	connectOnce := func() (net.Conn, string, error) {
+		conn, err := dialVPN(cfg)
+		if err != nil {
+			return nil, "", err
+		}
+		conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+		abuf := make([]byte, 64)
+		an, err := protocol.ReadPacket(conn, abuf)
+		conn.SetReadDeadline(time.Time{})
+		if err != nil {
+			conn.Close()
+			return nil, "", fmt.Errorf("ip assignment: %w", err)
+		}
+		assigned := cfg.TunIP
+		if rest, ok := strings.CutPrefix(string(abuf[:an]), "ip:"); ok {
+			assigned = rest
+		}
+		return conn, assigned, nil
+	}
+
+	// IMPORTANT: establish the first connection BEFORE touching any routes,
+	// otherwise an unreachable server would kill the whole internet.
+	var conn net.Conn
+	var assigned string
+	for {
+		conn, assigned, err = connectOnce()
+		if err == nil {
+			break
+		}
+		log.Printf("connect: %v (retry in 5s)", err)
+		time.Sleep(5 * time.Second)
+	}
+	log.Printf("connected to %s (SSH transport)", cfg.SSHAddr)
+
 	dev, err := tun.Create(cfg.TunName)
 	if err != nil {
 		log.Fatalf("create tun (need admin): %v", err)
@@ -253,6 +289,12 @@ func main() {
 			log.Printf("add route %s: %v", p, err)
 		}
 	}
+
+	if err := setTunIP(assigned); err != nil {
+		log.Fatalf("set ip: %v", err)
+	}
+	curIP := assigned
+	log.Printf("tunnel is up: %s via %s", curIP, cfg.TunGateway)
 
 	cleanup := func() {
 		_ = physLUID.DeleteRoute(serverRoute, gw)
@@ -299,44 +341,30 @@ func main() {
 		}
 	}()
 
-	// Main loop: connect and reconnect forever.
-	curIP := ""
+	// Main loop: pump until the connection breaks, then reconnect forever.
 	for {
-		conn, err := dialVPN(cfg)
-		if err != nil {
-			log.Printf("connect: %v (retry in 5s)", err)
-			time.Sleep(5 * time.Second)
-			continue
-		}
+		err = pump(conn, dev, tunCh)
+		conn.Close()
+		log.Printf("connection lost: %v (reconnect in 3s)", err)
+		time.Sleep(3 * time.Second)
 
-		// Server assigns our tunnel IP (supports multiple devices at once).
-		conn.SetReadDeadline(time.Now().Add(10 * time.Second))
-		abuf := make([]byte, 64)
-		an, err := protocol.ReadPacket(conn, abuf)
-		conn.SetReadDeadline(time.Time{})
-		if err != nil {
-			log.Printf("ip assignment: %v (retry in 5s)", err)
-			conn.Close()
+		for {
+			conn, assigned, err = connectOnce()
+			if err == nil {
+				break
+			}
+			log.Printf("reconnect: %v (retry in 5s)", err)
 			time.Sleep(5 * time.Second)
-			continue
 		}
-		if rest, ok := strings.CutPrefix(string(abuf[:an]), "ip:"); ok {
-			cfg.TunIP = rest
-		}
-		if cfg.TunIP != curIP {
-			if err := setTunIP(cfg.TunIP); err != nil {
+		if assigned != curIP {
+			if err := setTunIP(assigned); err != nil {
 				log.Printf("set ip: %v", err)
 				conn.Close()
 				time.Sleep(5 * time.Second)
 				continue
 			}
-			curIP = cfg.TunIP
+			curIP = assigned
 		}
-		log.Printf("tunnel is up: %s via %s", cfg.TunIP, cfg.TunGateway)
-
-		err = pump(conn, dev, tunCh)
-		conn.Close()
-		log.Printf("connection lost: %v (reconnect in 3s)", err)
-		time.Sleep(3 * time.Second)
+		log.Printf("tunnel is up: %s via %s", curIP, cfg.TunGateway)
 	}
 }
