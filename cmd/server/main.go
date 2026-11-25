@@ -1,5 +1,7 @@
-// Command server accepts VPN clients over TLS and forwards their IP
-// packets to the internet through a Linux TUN interface.
+// Command server accepts VPN clients over an SSH-forwarded connection and
+// forwards their IP packets to the internet through a Linux TUN interface.
+// Multiple clients are served simultaneously: each gets its own tunnel IP
+// from the 10.8.0.x pool, replies are dispatched by destination address.
 package main
 
 import (
@@ -8,6 +10,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/netip"
 	"os/exec"
 	"strings"
 	"sync"
@@ -62,6 +65,72 @@ func setupNetwork(cfg config.ServerConfig) error {
 }
 
 var tunWriteMu sync.Mutex
+
+// clientSession is one connected VPN client with its assigned tunnel IP.
+type clientSession struct {
+	conn    net.Conn
+	writeMu sync.Mutex
+}
+
+var (
+	sessionsMu sync.Mutex
+	sessions   = map[netip.Addr]*clientSession{}
+)
+
+// allocIP picks a free address from the 10.8.0.2-10.8.0.254 pool.
+func allocIP() (netip.Addr, error) {
+	sessionsMu.Lock()
+	defer sessionsMu.Unlock()
+	for i := 2; i < 255; i++ {
+		addr := netip.AddrFrom4([4]byte{10, 8, 0, byte(i)})
+		if _, taken := sessions[addr]; !taken {
+			return addr, nil
+		}
+	}
+	return netip.Addr{}, fmt.Errorf("IP pool exhausted")
+}
+
+func registerSession(addr netip.Addr, s *clientSession) {
+	sessionsMu.Lock()
+	sessions[addr] = s
+	sessionsMu.Unlock()
+}
+
+func unregisterSession(addr netip.Addr) {
+	sessionsMu.Lock()
+	delete(sessions, addr)
+	sessionsMu.Unlock()
+}
+
+// tunReader is the single reader of the TUN device: it dispatches reply
+// packets to the right client by destination IPv4 address.
+func tunReader(dev *tun.Device) {
+	buf := make([]byte, protocol.MaxPacketSize)
+	for {
+		n, err := dev.ReadPacket(buf)
+		if err != nil {
+			log.Printf("tun reader: %v", err)
+			time.Sleep(time.Second)
+			continue
+		}
+		if n < 20 || buf[0]>>4 != 4 {
+			continue // IPv4 only
+		}
+		dst := netip.AddrFrom4([4]byte{buf[16], buf[17], buf[18], buf[19]})
+		sessionsMu.Lock()
+		s := sessions[dst]
+		sessionsMu.Unlock()
+		if s == nil {
+			continue
+		}
+		s.writeMu.Lock()
+		err = protocol.WritePacket(s.conn, buf[:n])
+		s.writeMu.Unlock()
+		if err != nil {
+			log.Printf("dispatch to %s: %v", dst, err)
+		}
+	}
+}
 
 const decoyPage = `<!DOCTYPE html>
 <html lang="en">
@@ -134,52 +203,38 @@ func handle(conn net.Conn, dev *tun.Device, token string) {
 		echoMode(conn)
 		return
 	}
-	log.Printf("client connected: %s", remote)
-	defer log.Printf("client disconnected: %s", remote)
 
-	if tcp, ok := conn.(*net.TCPConn); ok {
-		tcp.SetKeepAlive(true)
-		tcp.SetKeepAlivePeriod(30 * time.Second)
+	ip, err := allocIP()
+	if err != nil {
+		log.Printf("no free IP for %s: %v", remote, err)
+		return
 	}
+	if err := protocol.WritePacket(conn, []byte("ip:"+ip.String()+"/24")); err != nil {
+		return
+	}
+	sess := &clientSession{conn: conn}
+	registerSession(ip, sess)
+	defer unregisterSession(ip)
 
-	errc := make(chan error, 2)
+	log.Printf("client connected: %s, tunnel IP %s", remote, ip)
+	defer log.Printf("client disconnected: %s (%s)", remote, ip)
 
-	// conn -> TUN (packets from client to the internet)
-	go func() {
-		buf := make([]byte, protocol.MaxPacketSize)
-		for {
-			n, err := protocol.ReadPacket(conn, buf)
-			if err != nil {
-				errc <- fmt.Errorf("read conn: %w", err)
-				return
-			}
-			tunWriteMu.Lock()
-			err = dev.WritePacket(buf[:n])
-			tunWriteMu.Unlock()
-			if err != nil {
-				errc <- fmt.Errorf("write tun: %w", err)
-				return
-			}
+	// conn -> TUN (packets from this client to the internet)
+	buf := make([]byte, protocol.MaxPacketSize)
+	for {
+		n, err := protocol.ReadPacket(conn, buf)
+		if err != nil {
+			log.Printf("session %s error: %v", ip, err)
+			return
 		}
-	}()
-
-	// TUN -> conn (replies from the internet to the client)
-	go func() {
-		buf := make([]byte, protocol.MaxPacketSize)
-		for {
-			n, err := dev.ReadPacket(buf)
-			if err != nil {
-				errc <- fmt.Errorf("read tun: %w", err)
-				return
-			}
-			if err := protocol.WritePacket(conn, buf[:n]); err != nil {
-				errc <- fmt.Errorf("write conn: %w", err)
-				return
-			}
+		tunWriteMu.Lock()
+		err = dev.WritePacket(buf[:n])
+		tunWriteMu.Unlock()
+		if err != nil {
+			log.Printf("session %s write tun: %v", ip, err)
+			return
 		}
-	}()
-
-	log.Printf("session error: %v", <-errc)
+	}
 }
 
 func main() {
@@ -200,6 +255,8 @@ func main() {
 	if err := setupNetwork(cfg); err != nil {
 		log.Printf("network setup warning: %v", err)
 	}
+
+	go tunReader(dev)
 
 	ln, err := net.Listen("tcp", cfg.ListenAddr)
 	if err != nil {

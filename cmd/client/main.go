@@ -13,6 +13,7 @@ import (
 	"net/netip"
 	"os"
 	"os/signal"
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -160,6 +161,17 @@ func main() {
 		log.Fatalf("connect to %s: %v", cfg.SSHAddr, err)
 	}
 	log.Printf("connected to %s (SSH transport)", cfg.SSHAddr)
+
+	// Server assigns our tunnel IP (supports multiple devices at once).
+	abuf := make([]byte, 64)
+	an, err := protocol.ReadPacket(conn, abuf)
+	if err != nil {
+		log.Fatalf("ip assignment: %v", err)
+	}
+	if rest, ok := strings.CutPrefix(string(abuf[:an]), "ip:"); ok {
+		cfg.TunIP = rest
+	}
+	log.Printf("assigned tunnel IP: %s", cfg.TunIP)
 
 	dev, err := tun.Create(cfg.TunName)
 	if err != nil {
