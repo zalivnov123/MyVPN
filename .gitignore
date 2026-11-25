@@ -10,3 +10,11 @@ vultr_vpn.pub
 wintun.dll
 *.log
 state.txt
+mobile-config.json
+mobile-config-qr.png
+qrgen.exe
+android/.gradle/
+android/app/build/
+android/build/
+android/local.properties
+android/app/libs/
