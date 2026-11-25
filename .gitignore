@@ -9,3 +9,4 @@ vultr_vpn
 vultr_vpn.pub
 wintun.dll
 *.log
+state.txt

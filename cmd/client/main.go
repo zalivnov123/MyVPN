@@ -1,6 +1,6 @@
-// Command client connects a Windows machine to the VPN server over TLS:
+// Command client connects a Windows machine to the VPN server over SSH:
 // creates a wintun adapter, routes traffic through the tunnel.
-// Requires administrator privileges.
+// Requires administrator privileges. Reconnects automatically on failure.
 package main
 
 import (
@@ -27,6 +27,10 @@ import (
 	"personalvpn/internal/protocol"
 	"personalvpn/internal/tun"
 )
+
+var stats struct {
+	tunRx, tunTx, connRx, connTx atomic.Uint64
+}
 
 // defaultGateway finds the current default IPv4 route (before we change anything).
 func defaultGateway() (winipcfg.LUID, netip.Addr, error) {
@@ -140,6 +144,49 @@ func runEcho(cfg config.ClientConfig) {
 	log.Printf("echo: PASSED, connection stable for 60s")
 }
 
+// pump moves packets between the tunnel and one connection until it breaks.
+func pump(conn net.Conn, dev *tun.Device, tunCh <-chan []byte) error {
+	errc := make(chan error, 2)
+	done := make(chan struct{})
+	defer close(done)
+
+	// conn -> TUN (replies from the internet)
+	go func() {
+		buf := make([]byte, protocol.MaxPacketSize)
+		for {
+			n, err := protocol.ReadPacket(conn, buf)
+			if err != nil {
+				errc <- fmt.Errorf("read conn: %w", err)
+				return
+			}
+			stats.connRx.Add(1)
+			if err := dev.WritePacket(buf[:n]); err != nil {
+				errc <- fmt.Errorf("write tun: %w", err)
+				return
+			}
+			stats.tunTx.Add(1)
+		}
+	}()
+
+	// TUN -> conn (packets from this machine to the internet)
+	go func() {
+		for {
+			select {
+			case <-done:
+				return
+			case pkt := <-tunCh:
+				if err := protocol.WritePacket(conn, pkt); err != nil {
+					errc <- fmt.Errorf("write conn: %w", err)
+					return
+				}
+				stats.connTx.Add(1)
+			}
+		}
+	}()
+
+	return <-errc
+}
+
 func main() {
 	configPath := flag.String("config", "client.json", "path to config file")
 	echo := flag.Bool("echo", false, "diagnostic echo mode (no tunnel)")
@@ -165,37 +212,20 @@ func main() {
 	}
 	serverIP := addrs[0].IP.String()
 
-	conn, err := dialVPN(cfg)
-	if err != nil {
-		log.Fatalf("connect to %s: %v", cfg.SSHAddr, err)
-	}
-	log.Printf("connected to %s (SSH transport)", cfg.SSHAddr)
-
-	// Server assigns our tunnel IP (supports multiple devices at once).
-	abuf := make([]byte, 64)
-	an, err := protocol.ReadPacket(conn, abuf)
-	if err != nil {
-		log.Fatalf("ip assignment: %v", err)
-	}
-	if rest, ok := strings.CutPrefix(string(abuf[:an]), "ip:"); ok {
-		cfg.TunIP = rest
-	}
-	log.Printf("assigned tunnel IP: %s", cfg.TunIP)
-
 	dev, err := tun.Create(cfg.TunName)
 	if err != nil {
 		log.Fatalf("create tun (need admin): %v", err)
 	}
 	luid := winipcfg.LUID(dev.Adapter.LUID())
 
-	// Address and DNS on the tunnel interface.
-	tunPrefix, err := netip.ParsePrefix(cfg.TunIP)
-	if err != nil {
-		log.Fatalf("bad tun_ip: %v", err)
+	setTunIP := func(cidr string) error {
+		prefix, err := netip.ParsePrefix(cidr)
+		if err != nil {
+			return err
+		}
+		return luid.SetIPAddresses([]netip.Prefix{prefix})
 	}
-	if err := luid.SetIPAddresses([]netip.Prefix{tunPrefix}); err != nil {
-		log.Fatalf("set ip: %v", err)
-	}
+
 	dns := []netip.Addr{netip.MustParseAddr(cfg.DNS)}
 	if err := luid.SetDNS(winipcfg.AddressFamily(windows.AF_INET), dns, nil); err != nil {
 		log.Printf("set dns: %v", err)
@@ -223,7 +253,6 @@ func main() {
 			log.Printf("add route %s: %v", p, err)
 		}
 	}
-	log.Printf("tunnel is up: %s via %s", cfg.TunIP, cfg.TunGateway)
 
 	cleanup := func() {
 		_ = physLUID.DeleteRoute(serverRoute, gw)
@@ -238,8 +267,27 @@ func main() {
 		os.Exit(0)
 	}()
 
-	errc := make(chan error, 2)
-	var tunRx, tunTx, connRx, connTx atomic.Uint64
+	// Single TUN reader feeding the current session; packets are dropped
+	// while disconnected.
+	tunCh := make(chan []byte, 256)
+	go func() {
+		buf := make([]byte, protocol.MaxPacketSize)
+		for {
+			n, err := dev.ReadPacket(buf)
+			if err != nil {
+				log.Printf("read tun: %v", err)
+				time.Sleep(time.Second)
+				continue
+			}
+			stats.tunRx.Add(1)
+			pkt := make([]byte, n)
+			copy(pkt, buf[:n])
+			select {
+			case tunCh <- pkt:
+			default: // no active session or channel full: drop
+			}
+		}
+	}()
 
 	// Periodic stats for debugging.
 	go func() {
@@ -247,47 +295,48 @@ func main() {
 		defer t.Stop()
 		for range t.C {
 			log.Printf("stats: tun_rx=%d conn_tx=%d conn_rx=%d tun_tx=%d",
-				tunRx.Load(), connTx.Load(), connRx.Load(), tunTx.Load())
+				stats.tunRx.Load(), stats.connTx.Load(), stats.connRx.Load(), stats.tunTx.Load())
 		}
 	}()
 
-	// TUN -> server
-	go func() {
-		buf := make([]byte, protocol.MaxPacketSize)
-		for {
-			n, err := dev.ReadPacket(buf)
-			if err != nil {
-				errc <- fmt.Errorf("read tun: %w", err)
-				return
-			}
-			tunRx.Add(1)
-			if err := protocol.WritePacket(conn, buf[:n]); err != nil {
-				errc <- fmt.Errorf("write conn: %w", err)
-				return
-			}
-			connTx.Add(1)
+	// Main loop: connect and reconnect forever.
+	curIP := ""
+	for {
+		conn, err := dialVPN(cfg)
+		if err != nil {
+			log.Printf("connect: %v (retry in 5s)", err)
+			time.Sleep(5 * time.Second)
+			continue
 		}
-	}()
 
-	// server -> TUN
-	go func() {
-		buf := make([]byte, protocol.MaxPacketSize)
-		for {
-			n, err := protocol.ReadPacket(conn, buf)
-			if err != nil {
-				errc <- fmt.Errorf("read conn: %w", err)
-				return
-			}
-			connRx.Add(1)
-			if err := dev.WritePacket(buf[:n]); err != nil {
-				errc <- fmt.Errorf("write tun: %w", err)
-				return
-			}
-			tunTx.Add(1)
+		// Server assigns our tunnel IP (supports multiple devices at once).
+		conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+		abuf := make([]byte, 64)
+		an, err := protocol.ReadPacket(conn, abuf)
+		conn.SetReadDeadline(time.Time{})
+		if err != nil {
+			log.Printf("ip assignment: %v (retry in 5s)", err)
+			conn.Close()
+			time.Sleep(5 * time.Second)
+			continue
 		}
-	}()
+		if rest, ok := strings.CutPrefix(string(abuf[:an]), "ip:"); ok {
+			cfg.TunIP = rest
+		}
+		if cfg.TunIP != curIP {
+			if err := setTunIP(cfg.TunIP); err != nil {
+				log.Printf("set ip: %v", err)
+				conn.Close()
+				time.Sleep(5 * time.Second)
+				continue
+			}
+			curIP = cfg.TunIP
+		}
+		log.Printf("tunnel is up: %s via %s", cfg.TunIP, cfg.TunGateway)
 
-	err = <-errc
-	log.Printf("connection lost: %v", err)
-	cleanup()
+		err = pump(conn, dev, tunCh)
+		conn.Close()
+		log.Printf("connection lost: %v (reconnect in 3s)", err)
+		time.Sleep(3 * time.Second)
+	}
 }

@@ -37,7 +37,7 @@ tasklist /FI "IMAGENAME eq vpn-client.exe" | findstr /I /C:"vpn-client.exe" >nul
 if errorlevel 1 (
     echo Не удалось запустить. Подробности в client.log и start.log
 ) else (
-    echo VPN запущен!
+    echo VPN запущен! После перезагрузки включится сам.
 )
 pause
 goto menu
@@ -50,6 +50,12 @@ if errorlevel 1 (
 ) else (
     echo Процесс: РАБОТАЕТ
 )
+if exist "%DIR%state.txt" (
+    set /p st=<"%DIR%state.txt"
+) else (
+    set st=off
+)
+if "%st%"=="on" (echo Автозапуск после перезагрузки: ВКЛ) else (echo Автозапуск после перезагрузки: ВЫКЛ)
 echo.
 echo Ваш текущий внешний IP:
 curl -4 -s --max-time 8 ifconfig.me
@@ -66,7 +72,7 @@ echo Выключаю... (подтвердите запрос администратора)
 powershell -NoProfile -Command "Start-Process powershell -Verb RunAs -WindowStyle Hidden -Wait -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','%DIR%stop-vpn.ps1'"
 tasklist /FI "IMAGENAME eq vpn-client.exe" | findstr /I /C:"vpn-client.exe" >nul
 if errorlevel 1 (
-    echo VPN выключен.
+    echo VPN выключен. После перезагрузки НЕ включится.
 ) else (
     echo Не удалось остановить - попробуйте ещё раз.
 )
