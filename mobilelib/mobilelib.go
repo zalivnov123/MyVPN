@@ -38,6 +38,7 @@ var (
 	mu      sync.Mutex
 	conn    net.Conn
 	sshConn *ssh.Client
+	tunDev  *os.File
 	running bool
 )
 
@@ -178,6 +179,7 @@ func StartPump(tunFD int) error {
 		return fmt.Errorf("bad tun fd %d", tunFD)
 	}
 	mu.Lock()
+	tunDev = dev
 	running = true
 	mu.Unlock()
 	setState("running")
@@ -228,14 +230,17 @@ func StartPump(tunFD int) error {
 // Stop closes the session.
 func Stop() {
 	mu.Lock()
-	c, sc := conn, sshConn
-	conn, sshConn, running = nil, nil, false
+	c, sc, td := conn, sshConn, tunDev
+	conn, sshConn, tunDev, running = nil, nil, nil, false
 	mu.Unlock()
 	if c != nil {
 		c.Close()
 	}
 	if sc != nil {
 		sc.Close()
+	}
+	if td != nil {
+		td.Close()
 	}
 	setState("stopped")
 }

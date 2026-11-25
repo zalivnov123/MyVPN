@@ -93,15 +93,15 @@ class MyVpnService : VpnService() {
 
             vpnInterface?.close()
             vpnInterface = builder.establish()
-            val fd = vpnInterface?.fileDescriptor
-            if (fd == null) {
+            val pfd = vpnInterface
+            if (pfd == null) {
                 Log.e("MyVPN", "establish() failed")
                 stopVpn()
                 return
             }
             running = true
             VpnEvents.activityListener?.invoke("running", null)
-            Mobilelib.startPump(fd.detachFd())
+            Mobilelib.startPump(pfd.detachFd().toLong())
         } catch (e: Exception) {
             Log.e("MyVPN", "connect failed", e)
             VpnEvents.activityListener?.invoke("log", "connect failed: ${e.message}")
