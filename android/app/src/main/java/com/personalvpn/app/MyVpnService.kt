@@ -82,10 +82,12 @@ class MyVpnService : VpnService() {
             val configJSON = configFile.readText()
             val cidr = Mobilelib.connect(configJSON)  // throws on error
             tunnelIp = cidr
+            val addr = cidr.substringBefore('/')
+            val prefix = cidr.substringAfter('/', "24").toIntOrNull() ?: 24
 
             val builder = Builder()
                 .setSession("MyVPN")
-                .addAddress(cidr, 24)
+                .addAddress(addr, prefix)
                 .addRoute("0.0.0.0", 0)
                 .addDnsServer("1.1.1.1")
                 .setMtu(1500)
