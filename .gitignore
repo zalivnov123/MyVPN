@@ -6,3 +6,4 @@
 configs/server.json
 configs/client.json
 *.log
+secrets/
