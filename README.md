@@ -38,13 +38,24 @@ GOOS=windows go build -o bin/vpn-client.exe ./cmd/client
 
 ## Клиент (Windows)
 
-Запуск от администратора:
+Плоская портабельная папка — всё рядом:
 
 ```
-vpn-client.exe -config configs/client.json
+MyVPN.bat         <- лаунчер (меню: запуск/статус/выключение)
+vpn-client.exe
+wintun.dll        <- драйвер из https://www.wintun.net (bin/amd64)
+start-vpn.ps1
+stop-vpn.ps1
+client.json       <- конфиг (ssh_key_file: "vultr_vpn" - путь относительный)
+vultr_vpn         <- приватный SSH-ключ
 ```
 
-Диагностика без туннеля (проверка транспорта): `vpn-client.exe -echo -config configs/client.json`
+Запуск: MyVPN.bat → «1. Запустить» (нужны права администратора).
+Относительный путь к ключу клиент разрешает от папки с exe,
+поэтому папку можно копировать куда угодно без правок конфига.
+
+Диагностика без туннеля (проверка транспорта):
+`vpn-client.exe -echo -config client.json`
 
 Клиент: поднимает wintun-адаптер, вешает на него IP и DNS, добавляет
 маршрут /32 до сервера через физический шлюз и /1-маршруты через туннель.

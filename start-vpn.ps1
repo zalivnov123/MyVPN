@@ -1,7 +1,7 @@
 # Starts the VPN client hidden, logging to client.log; own errors to start.log
-$root = Split-Path $PSScriptRoot -Parent
-$exe = Join-Path $root 'bin\vpn-client.exe'
-$cfg = Join-Path $root 'configs\client.json'
+$root = $PSScriptRoot
+$exe = Join-Path $root 'vpn-client.exe'
+$cfg = Join-Path $root 'client.json'
 $log = Join-Path $root 'client.log'
 $startLog = Join-Path $root 'start.log'
 try {

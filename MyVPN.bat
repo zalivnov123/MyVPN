@@ -31,11 +31,11 @@ if not errorlevel 1 (
 )
 echo.
 echo Запускаю... (подтвердите запрос администратора)
-powershell -NoProfile -Command "Start-Process powershell -Verb RunAs -WindowStyle Hidden -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','%DIR%scripts\start-vpn.ps1'"
+powershell -NoProfile -Command "Start-Process powershell -Verb RunAs -WindowStyle Hidden -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','%DIR%start-vpn.ps1'"
 %SystemRoot%\System32\timeout.exe /t 4 >nul
 tasklist /FI "IMAGENAME eq vpn-client.exe" | findstr /I /C:"vpn-client.exe" >nul
 if errorlevel 1 (
-    echo Не удалось запустить. Подробности в client.log
+    echo Не удалось запустить. Подробности в client.log и start.log
 ) else (
     echo VPN запущен!
 )
@@ -63,7 +63,7 @@ goto menu
 :stop
 echo.
 echo Выключаю... (подтвердите запрос администратора)
-powershell -NoProfile -Command "Start-Process powershell -Verb RunAs -WindowStyle Hidden -Wait -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','%DIR%scripts\stop-vpn.ps1'"
+powershell -NoProfile -Command "Start-Process powershell -Verb RunAs -WindowStyle Hidden -Wait -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','%DIR%stop-vpn.ps1'"
 tasklist /FI "IMAGENAME eq vpn-client.exe" | findstr /I /C:"vpn-client.exe" >nul
 if errorlevel 1 (
     echo VPN выключен.

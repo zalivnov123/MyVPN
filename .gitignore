@@ -2,8 +2,10 @@
 /bin/
 *.exe
 
-# Real configs contain server IP and tokens — commit templates only
-configs/server.json
-configs/client.json
+# Runtime files: real config, SSH keys, driver — never commit these
+client.json
+server.json
+vultr_vpn
+vultr_vpn.pub
+wintun.dll
 *.log
-secrets/

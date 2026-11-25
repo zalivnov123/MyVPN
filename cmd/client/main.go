@@ -13,6 +13,7 @@ import (
 	"net/netip"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -60,9 +61,17 @@ func defaultGateway() (winipcfg.LUID, netip.Addr, error) {
 // dialVPN connects to the server over SSH (camouflage: DPI lets SSH through)
 // and opens a forwarded channel to the VPN listener on the server's localhost.
 func dialVPN(cfg config.ClientConfig) (net.Conn, error) {
-	key, err := os.ReadFile(cfg.SSHKeyFile)
+	keyPath := cfg.SSHKeyFile
+	if !filepath.IsAbs(keyPath) {
+		// Relative path: resolve against the executable's directory,
+		// so a portable folder works on any machine without edits.
+		if exe, err := os.Executable(); err == nil {
+			keyPath = filepath.Join(filepath.Dir(exe), keyPath)
+		}
+	}
+	key, err := os.ReadFile(keyPath)
 	if err != nil {
-		return nil, fmt.Errorf("read ssh key: %w", err)
+		return nil, fmt.Errorf("read ssh key %s: %w", keyPath, err)
 	}
 	signer, err := ssh.ParsePrivateKey(key)
 	if err != nil {

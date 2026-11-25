@@ -1,7 +1,7 @@
 {
   "ssh_addr": "YOUR_SERVER_IP:442",
   "ssh_user": "vpn",
-  "ssh_key_file": "C:\\Users\\YOU\\.ssh\\vultr_vpn",
+  "ssh_key_file": "vultr_vpn",
   "ssh_host_key": "BASE64_ED25519_HOST_KEY",
   "vpn_addr": "127.0.0.1:8443",
   "tun_name": "MyVPN",
