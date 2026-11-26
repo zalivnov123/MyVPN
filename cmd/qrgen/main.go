@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 
@@ -37,8 +38,22 @@ func main() {
 		os.Exit(1)
 	}
 
-	mobile := map[string]string{
+	host, _, err := net.SplitHostPort(cfg.SSHAddr)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "bad ssh_addr:", err)
+		os.Exit(1)
+	}
+	addrs := []string{cfg.SSHAddr}
+	for _, port := range []string{"442", "443", "22"} {
+		a := net.JoinHostPort(host, port)
+		if a != cfg.SSHAddr {
+			addrs = append(addrs, a)
+		}
+	}
+
+	mobile := map[string]any{
 		"ssh_addr":     cfg.SSHAddr,
+		"ssh_addrs":    addrs,
 		"ssh_user":     cfg.SSHUser,
 		"ssh_key_data": base64.StdEncoding.EncodeToString(key),
 		"ssh_host_key": cfg.SSHHostKeyB64,

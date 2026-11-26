@@ -96,9 +96,21 @@ func dialVPN(cfg config.ClientConfig) (net.Conn, error) {
 		HostKeyAlgorithms: []string{ssh.KeyAlgoED25519},
 		Timeout:           10 * time.Second,
 	}
-	sshConn, err := ssh.Dial("tcp", cfg.SSHAddr, sshCfg)
-	if err != nil {
-		return nil, fmt.Errorf("ssh dial %s: %w", cfg.SSHAddr, err)
+	addrs := cfg.SSHAddrs
+	if len(addrs) == 0 {
+		addrs = []string{cfg.SSHAddr}
+	}
+	var sshConn *ssh.Client
+	var lastErr error
+	for _, addr := range addrs {
+		sshConn, lastErr = ssh.Dial("tcp", addr, sshCfg)
+		if lastErr == nil {
+			break
+		}
+		log.Printf("dial %s: %v (trying next)", addr, lastErr)
+	}
+	if sshConn == nil {
+		return nil, fmt.Errorf("all ssh addresses failed, last: %w", lastErr)
 	}
 	conn, err := sshConn.Dial("tcp", cfg.VPNAddr)
 	if err != nil {

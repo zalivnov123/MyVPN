@@ -71,8 +71,73 @@ func IsRunning() bool {
 	return running
 }
 
-// Connect dials the server over SSH, authenticates and returns the assigned
-// tunnel IP CIDR (e.g. "10.8.0.2/24"). configJSON is the full client.json.
+// connectVia performs one full connection attempt to a specific address.
+func connectVia(cfg config.ClientConfig, addr string, signer ssh.Signer, pubKey ssh.PublicKey) (net.Conn, *ssh.Client, string, error) {
+	protect := func(fd uintptr) {
+		mu.Lock()
+		p := protector
+		mu.Unlock()
+		if p != nil && !p.Protect(int32(fd)) {
+			logf("warning: protect(%d) failed", fd)
+		}
+	}
+	dialer := &net.Dialer{
+		Timeout: 10 * time.Second,
+		Control: func(_, _ string, c syscall.RawConn) error {
+			var cerr error
+			c.Control(func(fd uintptr) { protect(fd) })
+			return cerr
+		},
+	}
+	rawConn, err := dialer.Dial("tcp", addr)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	sshCfg := &ssh.ClientConfig{
+		User:              cfg.SSHUser,
+		Auth:              []ssh.AuthMethod{ssh.PublicKeys(signer)},
+		HostKeyCallback:   ssh.FixedHostKey(pubKey),
+		HostKeyAlgorithms: []string{ssh.KeyAlgoED25519},
+		Timeout:           10 * time.Second,
+	}
+	sc, chans, reqs, err := ssh.NewClientConn(rawConn, addr, sshCfg)
+	if err != nil {
+		rawConn.Close()
+		return nil, nil, "", fmt.Errorf("ssh handshake: %w", err)
+	}
+	client := ssh.NewClient(sc, chans, reqs)
+
+	vpnConn, err := client.Dial("tcp", cfg.VPNAddr)
+	if err != nil {
+		client.Close()
+		return nil, nil, "", fmt.Errorf("ssh forward to %s: %w", cfg.VPNAddr, err)
+	}
+	if err := protocol.WritePacket(vpnConn, []byte(cfg.Token)); err != nil {
+		vpnConn.Close()
+		client.Close()
+		return nil, nil, "", err
+	}
+	vpnConn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	abuf := make([]byte, 64)
+	an, err := protocol.ReadPacket(vpnConn, abuf)
+	vpnConn.SetReadDeadline(time.Time{})
+	if err != nil {
+		vpnConn.Close()
+		client.Close()
+		return nil, nil, "", fmt.Errorf("ip assignment: %w", err)
+	}
+	assigned, ok := strings.CutPrefix(string(abuf[:an]), "ip:")
+	if !ok {
+		vpnConn.Close()
+		client.Close()
+		return nil, nil, "", fmt.Errorf("unexpected server greeting")
+	}
+	return vpnConn, client, assigned, nil
+}
+
+// Connect dials the server over SSH, trying each address from ssh_addrs
+// in order, authenticates and returns the assigned tunnel IP CIDR.
+// configJSON is the full client.json.
 func Connect(configJSON string) (string, error) {
 	var cfg config.ClientConfig
 	if err := config.Parse([]byte(configJSON), &cfg); err != nil {
@@ -95,66 +160,24 @@ func Connect(configJSON string) (string, error) {
 		return "", fmt.Errorf("parse ssh_host_key: %w", err)
 	}
 
-	protect := func(fd uintptr) {
-		mu.Lock()
-		p := protector
-		mu.Unlock()
-		if p != nil && !p.Protect(int32(fd)) {
-			logf("warning: protect(%d) failed", fd)
+	addrs := cfg.SSHAddrs
+	if len(addrs) == 0 {
+		addrs = []string{cfg.SSHAddr}
+	}
+	var vpnConn net.Conn
+	var client *ssh.Client
+	var assigned string
+	var lastErr error
+	for _, addr := range addrs {
+		vpnConn, client, assigned, lastErr = connectVia(cfg, addr, signer, pubKey)
+		if lastErr == nil {
+			logf("connected via %s, assigned %s", addr, assigned)
+			break
 		}
+		logf("port %s failed: %v", addr, lastErr)
 	}
-	dialer := &net.Dialer{
-		Timeout: 15 * time.Second,
-		Control: func(_, _ string, c syscall.RawConn) error {
-			var cerr error
-			c.Control(func(fd uintptr) { protect(fd) })
-			return cerr
-		},
-	}
-	rawConn, err := dialer.Dial("tcp", cfg.SSHAddr)
-	if err != nil {
-		return "", fmt.Errorf("dial %s: %w", cfg.SSHAddr, err)
-	}
-	sshCfg := &ssh.ClientConfig{
-		User:              cfg.SSHUser,
-		Auth:              []ssh.AuthMethod{ssh.PublicKeys(signer)},
-		HostKeyCallback:   ssh.FixedHostKey(pubKey),
-		HostKeyAlgorithms: []string{ssh.KeyAlgoED25519},
-		Timeout:           15 * time.Second,
-	}
-	sc, chans, reqs, err := ssh.NewClientConn(rawConn, cfg.SSHAddr, sshCfg)
-	if err != nil {
-		rawConn.Close()
-		return "", fmt.Errorf("ssh handshake: %w", err)
-	}
-	client := ssh.NewClient(sc, chans, reqs)
-
-	vpnConn, err := client.Dial("tcp", cfg.VPNAddr)
-	if err != nil {
-		client.Close()
-		return "", fmt.Errorf("ssh forward to %s: %w", cfg.VPNAddr, err)
-	}
-	if err := protocol.WritePacket(vpnConn, []byte(cfg.Token)); err != nil {
-		vpnConn.Close()
-		client.Close()
-		return "", err
-	}
-	vpnConn.SetReadDeadline(time.Now().Add(10 * time.Second))
-	abuf := make([]byte, 64)
-	an, err := protocol.ReadPacket(vpnConn, abuf)
-	vpnConn.SetReadDeadline(time.Time{})
-	if err != nil {
-		vpnConn.Close()
-		client.Close()
-		return "", fmt.Errorf("ip assignment: %w", err)
-	}
-	assigned := ""
-	if rest, ok := strings.CutPrefix(string(abuf[:an]), "ip:"); ok {
-		assigned = rest
-	} else {
-		vpnConn.Close()
-		client.Close()
-		return "", fmt.Errorf("unexpected server greeting")
+	if vpnConn == nil {
+		return "", lastErr
 	}
 
 	mu.Lock()
@@ -185,7 +208,6 @@ func Connect(configJSON string) (string, error) {
 		}
 	}(client, myGen)
 
-	logf("connected, assigned %s", assigned)
 	return assigned, nil
 }
 
