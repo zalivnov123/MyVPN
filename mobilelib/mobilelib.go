@@ -161,6 +161,27 @@ func Connect(configJSON string) (string, error) {
 	sshConn = client
 	mu.Unlock()
 
+	// SSH keepalive: detect dead connections while the phone sleeps.
+	go func() {
+		t := time.NewTicker(15 * time.Second)
+		defer t.Stop()
+		for {
+			<-t.C
+			mu.Lock()
+			sc := sshConn
+			mu.Unlock()
+			if sc == nil {
+				return
+			}
+			if _, _, err := sc.SendRequest("keepalive@openssh.com", true, nil); err != nil {
+				logf("keepalive failed: %v", err)
+				Stop()
+				setState("lost")
+				return
+			}
+		}
+	}()
+
 	logf("connected, assigned %s", assigned)
 	return assigned, nil
 }
