@@ -93,6 +93,18 @@ class MyVpnService : VpnService() {
                 .setMtu(1500)
                 .setBlocking(true)
 
+            // Per-app bypass: selected apps go direct (marketplaces, banks).
+            val excluded = getSharedPreferences("myvpn", Context.MODE_PRIVATE)
+                .getStringSet("excluded_apps", emptySet()) ?: emptySet()
+            for (pkg in excluded) {
+                try {
+                    builder.addDisallowedApplication(pkg)
+                    Log.i("MyVPN", "app bypass: $pkg")
+                } catch (e: Exception) {
+                    Log.w("MyVPN", "cannot bypass $pkg: ${e.message}")
+                }
+            }
+
             vpnInterface?.close()
             vpnInterface = builder.establish()
             val pfd = vpnInterface

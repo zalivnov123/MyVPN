@@ -212,6 +212,13 @@ func main() {
 	}
 	serverIP := addrs[0].IP.String()
 
+	// Download/refresh the RU zone list while the network is still direct
+	// (before we touch DNS and routes).
+	var ruPrefixes []netip.Prefix
+	if cfg.BypassRU {
+		ruPrefixes = loadRUPrefixesSafe()
+	}
+
 	// connectOnce dials and reads the assigned tunnel IP. No system state
 	// (routes, adapters) is touched here.
 	connectOnce := func() (net.Conn, string, error) {
@@ -290,6 +297,11 @@ func main() {
 		}
 	}
 
+	// Russian sites that block VPN traffic go directly via the physical gateway.
+	if cfg.BypassRU && len(ruPrefixes) > 0 {
+		applyRURoutes(physLUID, gw, ruPrefixes)
+	}
+
 	if err := setTunIP(assigned); err != nil {
 		log.Fatalf("set ip: %v", err)
 	}
@@ -297,6 +309,7 @@ func main() {
 	log.Printf("tunnel is up: %s via %s", curIP, cfg.TunGateway)
 
 	cleanup := func() {
+		clearRUBypass(physLUID, gw, ruPrefixes)
 		_ = physLUID.DeleteRoute(serverRoute, gw)
 		dev.Close() // closing the adapter removes its routes
 		log.Printf("tunnel is down")

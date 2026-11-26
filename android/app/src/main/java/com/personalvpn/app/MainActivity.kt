@@ -58,6 +58,7 @@ class MainActivity : ComponentActivity() {
         statusText = TextView(this).apply { textSize = 16f; setPadding(0, 16, 0, 16) }
         val importFileBtn = Button(this).apply { text = "Импорт конфига (файл)" }
         val importQrBtn = Button(this).apply { text = "Импорт конфига (QR)" }
+        val appPickerBtn = Button(this).apply { text = "Приложения в обход VPN" }
         logText = TextView(this).apply { textSize = 12f; typeface = android.graphics.Typeface.MONOSPACE }
         val scroll = ScrollView(this).apply { addView(logText) }
 
@@ -65,6 +66,7 @@ class MainActivity : ComponentActivity() {
         root.addView(statusText)
         root.addView(importQrBtn)
         root.addView(importFileBtn)
+        root.addView(appPickerBtn)
         root.addView(scroll, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
         setContentView(root)
 
@@ -72,6 +74,9 @@ class MainActivity : ComponentActivity() {
         importFileBtn.setOnClickListener { filePicker.launch(arrayOf("*/*")) }
         importQrBtn.setOnClickListener {
             qrScanner.launch(ScanOptions().setOrientationLocked(false).setBeepEnabled(false).setPrompt("Наведите на QR-код с конфигом"))
+        }
+        appPickerBtn.setOnClickListener {
+            startActivity(Intent(this, AppPickerActivity::class.java))
         }
 
         VpnEvents.activityListener = { state, msg -> runOnUiThread { refresh(); if (msg != null) appendLog(msg) } }
