@@ -6,7 +6,7 @@ import android.os.Bundle
 import android.view.View
 import android.view.ViewGroup
 import android.widget.ArrayAdapter
-import android.widget.CheckBox
+import android.widget.CheckedTextView
 import android.widget.ListView
 import androidx.activity.ComponentActivity
 
@@ -32,20 +32,22 @@ class AppPickerActivity : ComponentActivity() {
             .sortedBy { it.label.lowercase() }
 
         val listView = ListView(this)
-        listView.adapter = object : ArrayAdapter<AppInfo>(this, android.R.layout.simple_list_item_multiple_choice, apps) {
+        val adapter = object : ArrayAdapter<AppInfo>(this, android.R.layout.simple_list_item_multiple_choice, apps) {
             override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
-                val view = super.getView(position, convertView, parent)
+                val view = super.getView(position, convertView, parent) as CheckedTextView
                 val app = apps[position]
-                (view as CheckBox).apply {
-                    text = "${app.label}\n${app.pkg}"
-                    isChecked = app.excluded
-                    setOnCheckedChangeListener { _, checked -> app.excluded = checked }
-                }
+                view.text = "${app.label}\n${app.pkg}"
+                view.isChecked = app.excluded
                 return view
             }
         }
+        listView.adapter = adapter
         listView.choiceMode = ListView.CHOICE_MODE_MULTIPLE
-        apps.forEachIndexed { i, app -> listView.setItemChecked(i, app.excluded) }
+        listView.setOnItemClickListener { _, _, position, _ ->
+            val app = apps[position]
+            app.excluded = !app.excluded
+            adapter.notifyDataSetChanged()
+        }
         setContentView(listView)
     }
 

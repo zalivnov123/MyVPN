@@ -103,6 +103,8 @@ class MainActivity : ComponentActivity() {
 
     private fun startVpn() {
         startForegroundService(Intent(this, MyVpnService::class.java))
+        toggleBtn.text = "Подключаюсь..."
+        statusText.text = "Статус: подключаюсь к серверу...\n(при недоступной сети будут повторные попытки)"
     }
 
     private fun refresh() {
