@@ -19,6 +19,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var statusText: TextView
     private lateinit var logText: TextView
     private lateinit var toggleBtn: Button
+    private lateinit var rootLayout: LinearLayout
 
     private val vpnConsent = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
         if (it.resultCode == RESULT_OK) startVpn() else toast("VPN: нет разрешения")
@@ -54,12 +55,20 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
 
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(32, 32, 32, 32) }
+        rootLayout = root
         toggleBtn = Button(this)
-        statusText = TextView(this).apply { textSize = 16f; setPadding(0, 16, 0, 16) }
+        statusText = TextView(this).apply {
+            textSize = 16f; setPadding(16, 16, 16, 16)
+            setBackgroundColor(0x99FFFFFF.toInt()) // читаемость поверх кота
+        }
         val importFileBtn = Button(this).apply { text = "Импорт конфига (файл)" }
         val importQrBtn = Button(this).apply { text = "Импорт конфига (QR)" }
         val appPickerBtn = Button(this).apply { text = "Приложения в обход VPN" }
-        logText = TextView(this).apply { textSize = 12f; typeface = android.graphics.Typeface.MONOSPACE }
+        logText = TextView(this).apply {
+            textSize = 12f
+            typeface = android.graphics.Typeface.MONOSPACE
+            setBackgroundColor(0x99FFFFFF.toInt())
+        }
         val scroll = ScrollView(this).apply { addView(logText) }
 
         root.addView(toggleBtn)
@@ -110,6 +119,8 @@ class MainActivity : ComponentActivity() {
     private fun refresh() {
         val running = MyVpnService.running
         toggleBtn.text = if (running) "Выключить" else "Запустить"
+        // Кот на фоне = VPN подключен; обычный серый фон = выключен.
+        rootLayout.setBackgroundResource(if (running) R.drawable.catbg else android.R.color.background_light)
         val hasConfig = File(filesDir, "config.json").exists()
         statusText.text = buildString {
             append("Статус: ").append(if (running) "РАБОТАЕТ" else "выключен").append('\n')
