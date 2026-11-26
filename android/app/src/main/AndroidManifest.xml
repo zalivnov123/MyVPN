@@ -10,7 +10,7 @@
 
     <application
         android:label="MyVPN"
-        android:icon="@android:drawable/ic_lock_lock"
+        android:icon="@mipmap/ic_launcher"
         android:theme="@android:style/Theme.Material.NoActionBar">
 
         <activity
