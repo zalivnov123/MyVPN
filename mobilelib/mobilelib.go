@@ -40,6 +40,7 @@ var (
 	sshConn *ssh.Client
 	tunDev  *os.File
 	running bool
+	gen     int64 // connection generation: stale sessions must not kill new ones
 )
 
 func SetProtector(p Protector) { mu.Lock(); protector = p; mu.Unlock() }
@@ -159,28 +160,30 @@ func Connect(configJSON string) (string, error) {
 	mu.Lock()
 	conn = vpnConn
 	sshConn = client
+	gen++
+	myGen := gen
 	mu.Unlock()
 
 	// SSH keepalive: detect dead connections while the phone sleeps.
-	go func() {
+	go func(sc *ssh.Client, g int64) {
 		t := time.NewTicker(15 * time.Second)
 		defer t.Stop()
 		for {
 			<-t.C
 			mu.Lock()
-			sc := sshConn
+			current := sshConn == sc && gen == g
 			mu.Unlock()
-			if sc == nil {
+			if !current {
 				return
 			}
 			if _, _, err := sc.SendRequest("keepalive@openssh.com", true, nil); err != nil {
 				logf("keepalive failed: %v", err)
-				Stop()
+				stopIfCurrent(g)
 				setState("lost")
 				return
 			}
 		}
-	}()
+	}(client, myGen)
 
 	logf("connected, assigned %s", assigned)
 	return assigned, nil
@@ -191,6 +194,7 @@ func Connect(configJSON string) (string, error) {
 func StartPump(tunFD int) error {
 	mu.Lock()
 	c := conn
+	g := gen
 	mu.Unlock()
 	if c == nil {
 		return fmt.Errorf("not connected: call Connect first")
@@ -242,15 +246,21 @@ func StartPump(tunFD int) error {
 
 		err := <-errc
 		logf("pump stopped: %v", err)
-		Stop()
+		stopIfCurrent(g)
 		setState("lost")
 	}()
 	return nil
 }
 
-// Stop closes the session.
-func Stop() {
+// stopIfCurrent tears down the session only if it is still the current one
+// (a kicked/ended old session must not kill a fresh connection).
+func stopIfCurrent(g int64) {
 	mu.Lock()
+	if gen != g {
+		mu.Unlock()
+		return
+	}
+	gen++
 	c, sc, td := conn, sshConn, tunDev
 	conn, sshConn, tunDev, running = nil, nil, nil, false
 	mu.Unlock()
@@ -263,5 +273,13 @@ func Stop() {
 	if td != nil {
 		td.Close()
 	}
+}
+
+// Stop closes the session.
+func Stop() {
+	mu.Lock()
+	g := gen
+	mu.Unlock()
+	stopIfCurrent(g)
 	setState("stopped")
 }
