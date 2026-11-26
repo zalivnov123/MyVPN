@@ -20,3 +20,5 @@ android/local.properties
 android/app/libs/
 friend-config-qr.png
 friend-mobile.json
+phone-config-qr.png
+phone-mobile.json
