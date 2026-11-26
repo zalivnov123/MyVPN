@@ -27,8 +27,9 @@ type ClientConfig struct {
 	TunIP      string `json:"tun_ip"`       // e.g. "10.8.0.2/24"
 	TunGateway string `json:"tun_gateway"`  // e.g. "10.8.0.1"
 	DNS        string `json:"dns"`          // e.g. "1.1.1.1"
-	Token      string `json:"token"`
-	BypassRU   bool   `json:"bypass_ru"`    // route Russian IP ranges directly, without VPN
+	Token         string   `json:"token"`
+	BypassRU      bool     `json:"bypass_ru"`      // route Russian IP ranges directly, without VPN
+	BypassDomains []string `json:"bypass_domains"` // route these domains directly (e.g. ozon.ru)
 }
 
 func Load(path string, v any) error {

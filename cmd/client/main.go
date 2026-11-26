@@ -230,6 +230,9 @@ func main() {
 	if cfg.BypassRU {
 		ruPrefixes = loadRUPrefixesSafe()
 	}
+	if len(cfg.BypassDomains) > 0 {
+		ruPrefixes = append(ruPrefixes, resolveBypassDomains(cfg.BypassDomains)...)
+	}
 
 	// connectOnce dials and reads the assigned tunnel IP. No system state
 	// (routes, adapters) is touched here.
@@ -310,7 +313,7 @@ func main() {
 	}
 
 	// Russian sites that block VPN traffic go directly via the physical gateway.
-	if cfg.BypassRU && len(ruPrefixes) > 0 {
+	if len(ruPrefixes) > 0 {
 		applyRURoutes(physLUID, gw, ruPrefixes)
 	}
 

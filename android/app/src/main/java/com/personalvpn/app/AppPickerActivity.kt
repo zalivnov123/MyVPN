@@ -47,13 +47,30 @@ class AppPickerActivity : ComponentActivity() {
             val app = apps[position]
             app.excluded = !app.excluded
             adapter.notifyDataSetChanged()
+            save() // сохраняем сразу при каждом клике
         }
-        setContentView(listView)
+
+        val root = android.widget.LinearLayout(this).apply { orientation = android.widget.LinearLayout.VERTICAL }
+        val saveBtn = android.widget.Button(this).apply {
+            text = "Сохранить (и перезапустите VPN)"
+            setOnClickListener {
+                save()
+                android.widget.Toast.makeText(this@AppPickerActivity, "Сохранено. Перезапустите VPN.", android.widget.Toast.LENGTH_LONG).show()
+                finish()
+            }
+        }
+        root.addView(saveBtn)
+        root.addView(listView, android.widget.LinearLayout.LayoutParams(android.widget.LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+        setContentView(root)
+    }
+
+    private fun save() {
+        val selected = apps.filter { it.excluded }.map { it.pkg }.toSet()
+        prefs.edit().putStringSet("excluded_apps", selected).apply()
     }
 
     override fun onPause() {
         super.onPause()
-        val selected = apps.filter { it.excluded }.map { it.pkg }.toSet()
-        prefs.edit().putStringSet("excluded_apps", selected).apply()
+        save()
     }
 }

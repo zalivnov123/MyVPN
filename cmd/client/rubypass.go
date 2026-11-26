@@ -2,9 +2,11 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/netip"
 	"os"
@@ -90,6 +92,26 @@ func loadRUPrefixesSafe() []netip.Prefix {
 	if err != nil {
 		log.Printf("ru bypass: %v (disabled)", err)
 		return nil
+	}
+	return prefixes
+}
+
+// resolveBypassDomains resolves domains to /32 prefixes (for direct routing
+// of sites like Ozon whose IPs are not in the RU zone list).
+func resolveBypassDomains(domains []string) []netip.Prefix {
+	var prefixes []netip.Prefix
+	for _, d := range domains {
+		ips, err := net.DefaultResolver.LookupIP(context.Background(), "ip4", d)
+		if err != nil {
+			log.Printf("bypass domain %s: resolve: %v", d, err)
+			continue
+		}
+		for _, ip := range ips {
+			if a, ok := netip.AddrFromSlice(ip); ok && a.Is4() {
+				prefixes = append(prefixes, netip.PrefixFrom(a, 32))
+			}
+		}
+		log.Printf("bypass domain %s: %d IPs direct", d, len(ips))
 	}
 	return prefixes
 }
