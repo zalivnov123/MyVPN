@@ -20,12 +20,16 @@ func main() {
 	keyPath := flag.String("key", "vultr_vpn", "private key file")
 	outQR := flag.String("qr", "mobile-config-qr.png", "output QR png")
 	outJSON := flag.String("json", "mobile-config.json", "output mobile config json")
+	token := flag.String("token", "", "override token (generate config for a specific user)")
 	flag.Parse()
 
 	var cfg config.ClientConfig
 	if err := config.Load(*configPath, &cfg); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
+	}
+	if *token != "" {
+		cfg.Token = *token
 	}
 	key, err := os.ReadFile(*keyPath)
 	if err != nil {

@@ -8,10 +8,11 @@ import (
 )
 
 type ServerConfig struct {
-	ListenAddr string `json:"listen_addr"` // e.g. "127.0.0.1:8443" (reached via SSH forward)
-	TunName    string `json:"tun_name"`    // e.g. "vpn0"
-	TunCIDR    string `json:"tun_cidr"`    // e.g. "10.8.0.1/24"
-	Token      string `json:"token"`       // shared secret
+	ListenAddr string            `json:"listen_addr"` // e.g. "127.0.0.1:8443" (reached via SSH forward)
+	TunName    string            `json:"tun_name"`    // e.g. "vpn0"
+	TunCIDR    string            `json:"tun_cidr"`    // e.g. "10.8.0.1/24"
+	Token      string            `json:"token"`       // legacy single shared secret (user "default")
+	Users      map[string]string `json:"users"`       // username -> token; one active session per user
 }
 
 type ClientConfig struct {

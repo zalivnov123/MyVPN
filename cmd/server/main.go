@@ -69,12 +69,15 @@ var tunWriteMu sync.Mutex
 // clientSession is one connected VPN client with its assigned tunnel IP.
 type clientSession struct {
 	conn    net.Conn
+	user    string
+	ip      netip.Addr
 	writeMu sync.Mutex
 }
 
 var (
 	sessionsMu sync.Mutex
 	sessions   = map[netip.Addr]*clientSession{}
+	byUser     = map[string]*clientSession{}
 )
 
 // allocIP picks a free address from the 10.8.0.2-10.8.0.254 pool.
@@ -90,15 +93,32 @@ func allocIP() (netip.Addr, error) {
 	return netip.Addr{}, fmt.Errorf("IP pool exhausted")
 }
 
-func registerSession(addr netip.Addr, s *clientSession) {
+// registerSession adds a session, kicking the user's previous one if any:
+// one token == one active connection.
+func registerSession(s *clientSession) {
+	var oldConn net.Conn
 	sessionsMu.Lock()
-	sessions[addr] = s
+	if prev := byUser[s.user]; prev != nil && prev != s {
+		oldConn = prev.conn
+		delete(sessions, prev.ip)
+	}
+	byUser[s.user] = s
+	sessions[s.ip] = s
 	sessionsMu.Unlock()
+	if oldConn != nil {
+		log.Printf("user %s: kicking previous session (%s)", s.user, s.ip)
+		oldConn.Close()
+	}
 }
 
-func unregisterSession(addr netip.Addr) {
+func unregisterSession(s *clientSession) {
 	sessionsMu.Lock()
-	delete(sessions, addr)
+	if sessions[s.ip] == s {
+		delete(sessions, s.ip)
+	}
+	if byUser[s.user] == s {
+		delete(byUser, s.user)
+	}
 	sessionsMu.Unlock()
 }
 
@@ -163,7 +183,20 @@ func echoMode(conn net.Conn) {
 	}
 }
 
-func handle(conn net.Conn, dev *tun.Device, token string) {
+// usernameForToken resolves the token to a username (constant-time compare).
+func usernameForToken(cfg config.ServerConfig, token string) string {
+	for name, tok := range cfg.Users {
+		if subtle.ConstantTimeCompare([]byte(token), []byte(tok)) == 1 {
+			return name
+		}
+	}
+	if cfg.Token != "" && subtle.ConstantTimeCompare([]byte(token), []byte(cfg.Token)) == 1 {
+		return "default"
+	}
+	return ""
+}
+
+func handle(conn net.Conn, dev *tun.Device, cfg config.ServerConfig) {
 	defer conn.Close()
 	remote := conn.RemoteAddr()
 
@@ -195,7 +228,8 @@ func handle(conn net.Conn, dev *tun.Device, token string) {
 		got = []byte(rest)
 		echo = true
 	}
-	if subtle.ConstantTimeCompare(got, []byte(token)) != 1 {
+	user := usernameForToken(cfg, string(got))
+	if user == "" {
 		log.Printf("auth failed from %s", remote)
 		return
 	}
@@ -212,12 +246,12 @@ func handle(conn net.Conn, dev *tun.Device, token string) {
 	if err := protocol.WritePacket(conn, []byte("ip:"+ip.String()+"/24")); err != nil {
 		return
 	}
-	sess := &clientSession{conn: conn}
-	registerSession(ip, sess)
-	defer unregisterSession(ip)
+	sess := &clientSession{conn: conn, user: user, ip: ip}
+	registerSession(sess)
+	defer unregisterSession(sess)
 
-	log.Printf("client connected: %s, tunnel IP %s", remote, ip)
-	defer log.Printf("client disconnected: %s (%s)", remote, ip)
+	log.Printf("client connected: %s, user %s, tunnel IP %s", remote, user, ip)
+	defer log.Printf("client disconnected: %s (%s, %s)", remote, user, ip)
 
 	// conn -> TUN (packets from this client to the internet)
 	buf := make([]byte, protocol.MaxPacketSize)
@@ -270,6 +304,6 @@ func main() {
 			log.Printf("accept: %v", err)
 			continue
 		}
-		go handle(conn, dev, cfg.Token)
+		go handle(conn, dev, cfg)
 	}
 }

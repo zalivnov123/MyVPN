@@ -18,3 +18,5 @@ android/app/build/
 android/build/
 android/local.properties
 android/app/libs/
+friend-config-qr.png
+friend-mobile.json
