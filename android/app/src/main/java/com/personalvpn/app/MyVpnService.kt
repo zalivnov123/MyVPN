@@ -72,9 +72,12 @@ class MyVpnService : VpnService() {
         shouldRun = true
         startForegroundWithNotification()
         if (workerThread?.isAlive != true) {
+            Log.i("MyVPN", "starting worker thread")
             lostLatch.set(CountDownLatch(1))
             workerThread = Thread({ workerLoop() }, "vpn-worker")
             workerThread?.start()
+        } else {
+            Log.i("MyVPN", "worker already alive")
         }
         return START_STICKY
     }
@@ -84,12 +87,14 @@ class MyVpnService : VpnService() {
     private fun workerLoop() {
         while (shouldRun) {
             try {
+                Log.i("MyVPN", "worker: connecting...")
                 if (!configFile.exists()) {
                     Log.e("MyVPN", "no config.json")
                     break
                 }
                 val configText = configFile.readText()
                 val cidr = Mobilelib.connect(configText) // throws on error
+                Log.i("MyVPN", "worker: connected, $cidr")
                 tunnelIp = cidr
                 val addr = cidr.substringBefore('/')
                 val prefix = cidr.substringAfter('/', "24").toIntOrNull() ?: 24
