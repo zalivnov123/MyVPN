@@ -123,7 +123,7 @@ func connectVia(cfg config.ClientConfig, addr string, signer ssh.Signer, pubKey 
 		return nil, nil, "", err
 	}
 	vpnConn.SetReadDeadline(time.Now().Add(10 * time.Second))
-	abuf := make([]byte, 64)
+	abuf := make([]byte, 2048)
 	an, err := protocol.ReadPacket(vpnConn, abuf)
 	vpnConn.SetReadDeadline(time.Time{})
 	if err != nil {
