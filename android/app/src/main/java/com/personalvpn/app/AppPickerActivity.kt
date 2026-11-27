@@ -43,9 +43,12 @@ class AppPickerActivity : ComponentActivity() {
         }
         listView.adapter = adapter
         listView.choiceMode = ListView.CHOICE_MODE_MULTIPLE
+        // Restore checked state through the ListView (it manages it in multiple-choice mode).
+        apps.forEachIndexed { i, app -> listView.setItemChecked(i, app.excluded) }
         listView.setOnItemClickListener { _, _, position, _ ->
             val app = apps[position]
             app.excluded = !app.excluded
+            listView.setItemChecked(position, app.excluded)
             adapter.notifyDataSetChanged()
             save() // сохраняем сразу при каждом клике
         }
