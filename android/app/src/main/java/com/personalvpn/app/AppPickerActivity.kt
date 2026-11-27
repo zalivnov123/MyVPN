@@ -59,8 +59,8 @@ class AppPickerActivity : ComponentActivity() {
                 finish()
             }
         }
-        root.addView(saveBtn)
         root.addView(listView, android.widget.LinearLayout.LayoutParams(android.widget.LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+        root.addView(saveBtn)
         setContentView(root)
     }
 
