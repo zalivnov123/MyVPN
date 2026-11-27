@@ -17,7 +17,8 @@ type ServerConfig struct {
 
 type ClientConfig struct {
 	SSHAddr       string   `json:"ssh_addr"`     // e.g. "64.176.74.108:442"
-	SSHAddrs      []string `json:"ssh_addrs"`    // fallback list, tried in order
+	SSHAddrs      []string `json:"ssh_addrs"`       // fallback list, tried in order
+	SSHExtraAddrs []string `json:"ssh_extra_addrs"` // domain/IPv6 fallbacks (qrgen appends to ssh_addrs)
 	SSHUser       string   `json:"ssh_user"`     // e.g. "vpn"
 	SSHKeyFile    string   `json:"ssh_key_file"` // desktop: path to private key
 	SSHKeyDataB64 string   `json:"ssh_key_data"` // mobile: PEM key, base64-encoded

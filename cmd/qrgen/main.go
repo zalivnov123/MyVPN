@@ -50,6 +50,9 @@ func main() {
 			addrs = append(addrs, a)
 		}
 	}
+	// Extra fallbacks from config: domain (works via DNS64/NAT64 on
+	// IPv6-only mobile networks) and/or the server's IPv6 literal.
+	addrs = append(addrs, cfg.SSHExtraAddrs...)
 
 	mobile := map[string]any{
 		"ssh_addr":       cfg.SSHAddr,
