@@ -52,14 +52,15 @@ func main() {
 	}
 
 	mobile := map[string]any{
-		"ssh_addr":     cfg.SSHAddr,
-		"ssh_addrs":    addrs,
-		"ssh_user":     cfg.SSHUser,
-		"ssh_key_data": base64.StdEncoding.EncodeToString(key),
-		"ssh_host_key": cfg.SSHHostKeyB64,
-		"vpn_addr":     cfg.VPNAddr,
-		"token":        cfg.Token,
-		"dns":          cfg.DNS,
+		"ssh_addr":       cfg.SSHAddr,
+		"ssh_addrs":      addrs,
+		"ssh_user":       cfg.SSHUser,
+		"ssh_key_data":   base64.StdEncoding.EncodeToString(key),
+		"ssh_host_key":   cfg.SSHHostKeyB64,
+		"vpn_addr":       cfg.VPNAddr,
+		"token":          cfg.Token,
+		"dns":            cfg.DNS,
+		"bypass_domains": cfg.BypassDomains,
 	}
 	data, err := json.Marshal(mobile)
 	if err != nil {
