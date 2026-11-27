@@ -59,6 +59,7 @@ class MainActivity : ComponentActivity() {
         toggleBtn = Button(this)
         statusText = TextView(this).apply {
             textSize = 16f; setPadding(16, 16, 16, 16)
+            setTextColor(0xFF000000.toInt())
             setBackgroundColor(0x99FFFFFF.toInt()) // читаемость поверх кота
         }
         val importFileBtn = Button(this).apply { text = "Импорт конфига (файл)" }
@@ -67,6 +68,7 @@ class MainActivity : ComponentActivity() {
         logText = TextView(this).apply {
             textSize = 12f
             typeface = android.graphics.Typeface.MONOSPACE
+            setTextColor(0xFF000000.toInt())
             setBackgroundColor(0x99FFFFFF.toInt())
         }
         val scroll = ScrollView(this).apply { addView(logText) }
@@ -98,6 +100,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun onToggle() {
+        android.util.Log.i("MyVPN", "toggle pressed, running=${MyVpnService.running}")
         if (MyVpnService.running) {
             MyVpnService.requestStop(this)
         } else {
@@ -106,12 +109,18 @@ class MainActivity : ComponentActivity() {
                 return
             }
             val intent = VpnService.prepare(this)
+            android.util.Log.i("MyVPN", "prepare: ${if (intent == null) "consent ok" else "CONSENT NEEDED"}")
             if (intent != null) vpnConsent.launch(intent) else startVpn()
         }
     }
 
     private fun startVpn() {
-        startForegroundService(Intent(this, MyVpnService::class.java))
+        try {
+            startForegroundService(Intent(this, MyVpnService::class.java))
+            android.util.Log.i("MyVPN", "startForegroundService called")
+        } catch (e: Exception) {
+            android.util.Log.e("MyVPN", "startForegroundService failed", e)
+        }
         toggleBtn.text = "Подключаюсь..."
         statusText.text = "Статус: подключаюсь к серверу...\n(при недоступной сети будут повторные попытки)"
     }

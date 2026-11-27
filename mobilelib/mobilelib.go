@@ -10,7 +10,6 @@ import (
 	"os"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -81,18 +80,24 @@ func connectVia(cfg config.ClientConfig, addr string, signer ssh.Signer, pubKey 
 			logf("warning: protect(%d) failed", fd)
 		}
 	}
-	dialer := &net.Dialer{
-		Timeout: 10 * time.Second,
-		Control: func(_, _ string, c syscall.RawConn) error {
-			var cerr error
-			c.Control(func(fd uintptr) { protect(fd) })
-			return cerr
-		},
-	}
+	dialer := &net.Dialer{Timeout: 8 * time.Second}
+	// protect via Control is applied separately after dial to avoid
+	// blocking inside Dial if the Java callback stalls.
 	rawConn, err := dialer.Dial("tcp", addr)
 	if err != nil {
 		return nil, nil, "", err
 	}
+	logf("dial ok: %s", addr)
+	if tc, ok := rawConn.(*net.TCPConn); ok {
+		if sc, err := tc.SyscallConn(); err == nil {
+			sc.Control(func(fd uintptr) { protect(fd) })
+		}
+	}
+	logf("protect done: %s", addr)
+	// Deadline for the handshake+auth phase: NewClientConn has no built-in
+	// timeout, and a carrier proxy that completes TCP but blocks data would
+	// hang us forever otherwise.
+	rawConn.SetDeadline(time.Now().Add(12 * time.Second))
 	sshCfg := &ssh.ClientConfig{
 		User:              cfg.SSHUser,
 		Auth:              []ssh.AuthMethod{ssh.PublicKeys(signer)},
@@ -132,6 +137,8 @@ func connectVia(cfg config.ClientConfig, addr string, signer ssh.Signer, pubKey 
 		client.Close()
 		return nil, nil, "", fmt.Errorf("unexpected server greeting")
 	}
+	rawConn.SetDeadline(time.Time{})
+	// assigned may carry extras: "10.8.0.3/24;bypass=dom1,dom2"
 	return vpnConn, client, assigned, nil
 }
 
@@ -169,6 +176,7 @@ func Connect(configJSON string) (string, error) {
 	var assigned string
 	var lastErr error
 	for _, addr := range addrs {
+		logf("trying %s ...", addr)
 		vpnConn, client, assigned, lastErr = connectVia(cfg, addr, signer, pubKey)
 		if lastErr == nil {
 			logf("connected via %s, assigned %s", addr, assigned)

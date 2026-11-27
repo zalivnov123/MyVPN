@@ -12,7 +12,8 @@ type ServerConfig struct {
 	TunName    string            `json:"tun_name"`    // e.g. "vpn0"
 	TunCIDR    string            `json:"tun_cidr"`    // e.g. "10.8.0.1/24"
 	Token      string            `json:"token"`       // legacy single shared secret (user "default")
-	Users      map[string]string `json:"users"`       // username -> token; one active session per user
+	Users         map[string]string `json:"users"`          // username -> token; one active session per user
+	BypassDomains []string          `json:"bypass_domains"` // sent to clients in the assignment frame
 }
 
 type ClientConfig struct {

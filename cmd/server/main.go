@@ -243,7 +243,11 @@ func handle(conn net.Conn, dev *tun.Device, cfg config.ServerConfig) {
 		log.Printf("no free IP for %s: %v", remote, err)
 		return
 	}
-	if err := protocol.WritePacket(conn, []byte("ip:"+ip.String()+"/24")); err != nil {
+	greeting := "ip:" + ip.String() + "/24"
+	if len(cfg.BypassDomains) > 0 {
+		greeting += ";bypass=" + strings.Join(cfg.BypassDomains, ",")
+	}
+	if err := protocol.WritePacket(conn, []byte(greeting)); err != nil {
 		return
 	}
 	sess := &clientSession{conn: conn, user: user, ip: ip}

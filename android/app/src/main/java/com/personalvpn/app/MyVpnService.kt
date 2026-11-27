@@ -93,8 +93,13 @@ class MyVpnService : VpnService() {
                     break
                 }
                 val configText = configFile.readText()
-                val cidr = Mobilelib.connect(configText) // throws on error
-                Log.i("MyVPN", "worker: connected, $cidr")
+                val greeting = Mobilelib.connect(configText) // "10.8.0.x/24;bypass=d1,d2"
+                val gparts = greeting.split(";", limit = 2)
+                val cidr = gparts[0]
+                val srvDomains = if (gparts.size == 2 && gparts[1].startsWith("bypass=")) {
+                    gparts[1].removePrefix("bypass=").split(",").filter { it.isNotBlank() }
+                } else emptyList()
+                Log.i("MyVPN", "worker: connected, $cidr, ${srvDomains.size} bypass domains from server")
                 tunnelIp = cidr
                 val addr = cidr.substringBefore('/')
                 val prefix = cidr.substringAfter('/', "24").toIntOrNull() ?: 24
@@ -118,8 +123,8 @@ class MyVpnService : VpnService() {
                     }
                 }
 
-                // Domain bypass (e.g. ozon.ru): route everything EXCEPT these IPs.
-                val excludedIps = resolveBypassDomains(configText)
+                // Domain bypass: server-provided list + local config list.
+                val excludedIps = resolveBypassDomains(configText, srvDomains)
                 for ((ip, len) in complementRoutes(excludedIps)) {
                     builder.addRoute(ip, len)
                 }
@@ -157,26 +162,29 @@ class MyVpnService : VpnService() {
         Log.i("MyVPN", "worker stopped")
     }
 
-    private fun resolveBypassDomains(configText: String): List<Pair<String, Int>> {
+    private fun resolveBypassDomains(configText: String, srvDomains: List<String>): List<Pair<String, Int>> {
         val out = mutableListOf<Pair<String, Int>>()
+        val domains = mutableSetOf<String>()
+        domains.addAll(srvDomains)
         try {
             val cfg = JSONObject(configText)
-            val arr = cfg.optJSONArray("bypass_domains") ?: return out
-            for (i in 0 until arr.length()) {
-                val domain = arr.getString(i)
-                try {
-                    for (addr in InetAddress.getAllByName(domain)) {
-                        if (addr is java.net.Inet4Address) {
-                            out.add(addr.hostAddress!! to 32)
-                        }
-                    }
-                    Log.i("MyVPN", "bypass domain $domain: direct")
-                } catch (e: Exception) {
-                    Log.w("MyVPN", "bypass domain $domain: resolve failed")
-                }
+            cfg.optJSONArray("bypass_domains")?.let { arr ->
+                for (i in 0 until arr.length()) domains.add(arr.getString(i))
             }
         } catch (e: Exception) {
             Log.w("MyVPN", "bypass_domains parse: ${e.message}")
+        }
+        for (domain in domains) {
+            try {
+                for (addr in InetAddress.getAllByName(domain)) {
+                    if (addr is java.net.Inet4Address) {
+                        out.add(addr.hostAddress!! to 32)
+                    }
+                }
+                Log.i("MyVPN", "bypass domain $domain: direct")
+            } catch (e: Exception) {
+                Log.w("MyVPN", "bypass domain $domain: resolve failed")
+            }
         }
         return out
     }

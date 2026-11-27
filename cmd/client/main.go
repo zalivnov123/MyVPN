@@ -234,34 +234,46 @@ func main() {
 		ruPrefixes = append(ruPrefixes, resolveBypassDomains(cfg.BypassDomains)...)
 	}
 
-	// connectOnce dials and reads the assigned tunnel IP. No system state
-	// (routes, adapters) is touched here.
-	connectOnce := func() (net.Conn, string, error) {
+	// connectOnce dials and reads the assignment frame:
+	// "ip:10.8.0.x/24;bypass=dom1,dom2" (bypass part optional).
+	// No system state (routes, adapters) is touched here.
+	connectOnce := func() (net.Conn, string, []string, error) {
 		conn, err := dialVPN(cfg)
 		if err != nil {
-			return nil, "", err
+			return nil, "", nil, err
 		}
 		conn.SetReadDeadline(time.Now().Add(10 * time.Second))
-		abuf := make([]byte, 64)
+		abuf := make([]byte, 2048)
 		an, err := protocol.ReadPacket(conn, abuf)
 		conn.SetReadDeadline(time.Time{})
 		if err != nil {
 			conn.Close()
-			return nil, "", fmt.Errorf("ip assignment: %w", err)
+			return nil, "", nil, fmt.Errorf("ip assignment: %w", err)
 		}
 		assigned := cfg.TunIP
+		var srvDomains []string
 		if rest, ok := strings.CutPrefix(string(abuf[:an]), "ip:"); ok {
-			assigned = rest
+			parts := strings.SplitN(rest, ";", 2)
+			assigned = parts[0]
+			if len(parts) == 2 {
+				if doms, ok := strings.CutPrefix(parts[1], "bypass="); ok && doms != "" {
+					srvDomains = strings.Split(doms, ",")
+				}
+			}
 		}
-		return conn, assigned, nil
+		return conn, assigned, srvDomains, nil
 	}
+
+	// connectOnceLocal resolves once for the first successful connection,
+	// returns also server-provided bypass domains.
 
 	// IMPORTANT: establish the first connection BEFORE touching any routes,
 	// otherwise an unreachable server would kill the whole internet.
 	var conn net.Conn
 	var assigned string
+	var srvDoms []string
 	for {
-		conn, assigned, err = connectOnce()
+		conn, assigned, srvDoms, err = connectOnce()
 		if err == nil {
 			break
 		}
@@ -269,6 +281,20 @@ func main() {
 		time.Sleep(5 * time.Second)
 	}
 	log.Printf("connected to %s (SSH transport)", cfg.SSHAddr)
+
+	// Merge server-provided bypass domains with local ones.
+	if len(srvDoms) > 0 {
+		seen := map[string]bool{}
+		for _, d := range cfg.BypassDomains {
+			seen[d] = true
+		}
+		for _, d := range srvDoms {
+			if !seen[d] {
+				cfg.BypassDomains = append(cfg.BypassDomains, d)
+			}
+		}
+		ruPrefixes = append(ruPrefixes, resolveBypassDomains(srvDoms)...)
+	}
 
 	dev, err := tun.Create(cfg.TunName)
 	if err != nil {
@@ -377,7 +403,7 @@ func main() {
 		time.Sleep(3 * time.Second)
 
 		for {
-			conn, assigned, err = connectOnce()
+			conn, assigned, _, err = connectOnce()
 			if err == nil {
 				break
 			}
